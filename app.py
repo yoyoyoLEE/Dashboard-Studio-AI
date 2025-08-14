@@ -15,12 +15,22 @@ DATA_ESAME = datetime(2025, 9, 24)
 OGGI = datetime.now().date()
 GIORNI_STUDIO = (DATA_ESAME.date() - OGGI).days
 STATO_FILE = "stato_argomenti.csv"
+PUNTEGGI_FILE = "punteggi_test.csv"
 
 # === CARICAMENTO ARGOMENTI ===
 @st.cache_data
 def carica_argomenti():
     df = pd.read_csv("argomenti_orali.csv")
     return df
+
+@st.cache_data
+def inizializza_punteggi():
+    if not os.path.exists(PUNTEGGI_FILE):
+        punteggi_df = pd.DataFrame(columns=["Argomento", "Punteggio", "Data", "Commento"])
+        punteggi_df.to_csv(PUNTEGGI_FILE, index=False)
+    else:
+        punteggi_df = pd.read_csv(PUNTEGGI_FILE)
+    return punteggi_df
 
 @st.cache_data
 def inizializza_stato_argomenti(df):
@@ -42,6 +52,7 @@ def inizializza_stato_argomenti(df):
 
 argomenti_df = carica_argomenti()
 stato_argomenti_df = inizializza_stato_argomenti(argomenti_df)
+punteggi_df = inizializza_punteggi()
 
 # === CALENDARIO STUDIO AUTOMATICO MIGLIORATO ===
 @st.cache_data
@@ -117,6 +128,18 @@ def chiamata_llm(prompt):
         return f"❌ Eccezione nella chiamata all'LLM: {str(e)}"
 
 
+def salva_punteggio(argomento, punteggio, commento):
+    global punteggi_df
+    nuova_riga = pd.DataFrame({
+        "Argomento": [argomento],
+        "Punteggio": [punteggio],
+        "Data": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+        "Commento": [commento]
+    })
+    punteggi_df = pd.concat([punteggi_df, nuova_riga], ignore_index=True)
+    punteggi_df.to_csv(PUNTEGGI_FILE, index=False)
+    st.toast(f"✅ Punteggio salvato: {argomento} → {punteggio}/10")
+
 def interazione_llm_su_argomento(argomento, modalita):
     if modalita == "studio":
         prompt = f"""Sei un tutor di lingua inglese. Spiega l'argomento seguente come se fosse una lezione:
@@ -130,18 +153,29 @@ Struttura la spiegazione in 3 parti:
 
 Usa un tono chiaro e professionale."""
         aggiorna_stato_argomento(argomento, "completato")
+        risposta = chiamata_llm(prompt)
+        st.session_state.chat_log.append({"utente": f"Richiesta su '{argomento}' [{modalita}]", "llm": risposta})
     elif modalita == "test":
-        prompt = f"""Simula una domanda di esame orale per il concorso AS2B basata sull'argomento:
+        # Imposta lo stato della sessione per il test
+        st.session_state.test_in_corso = True
+        st.session_state.test_argomento = argomento
+        st.session_state.test_fase = "domanda"
+        
+        prompt = f"""Sei un esaminatore di lingua inglese. Crea una domanda di esame orale per il concorso AS2B basata sull'argomento:
 
 "{argomento}"
 
-Aspettati una risposta dell’utente e poi valuta secondo i criteri ufficiali (contenuto, lingua inglese, chiarezza)."""
+Formula una singola domanda complessa che richieda conoscenza approfondita dell'argomento. La domanda deve essere chiara e specifica.
+Rispondi SOLO con la domanda, senza introduzioni o spiegazioni aggiuntive."""
+        
         aggiorna_stato_argomento(argomento, "da ripassare")
+        risposta = chiamata_llm(prompt)
+        st.session_state.test_domanda = risposta
+        st.session_state.chat_log.append({"utente": f"Richiesta test su '{argomento}'", "llm": risposta})
     else:
         prompt = ""
-
-    risposta = chiamata_llm(prompt)
-    st.session_state.chat_log.append({"utente": f"Richiesta su '{argomento}' [{modalita}]", "llm": risposta})
+        risposta = chiamata_llm(prompt)
+        st.session_state.chat_log.append({"utente": f"Richiesta su '{argomento}' [{modalita}]", "llm": risposta})
 
 # === CALENDARIO TRADIZIONALE ===
 def mostra_calendario_tradizionale():
@@ -318,21 +352,150 @@ def mostra_chat():
             st.markdown(f"**🤖 AI**: {turno['llm']}")
             st.divider()
     
-    # Use a callback to handle chat submission
-    def submit_chat():
-        user_input = st.session_state.chat_input
-        if user_input:
-            risposta = chiamata_llm(user_input)
-            st.session_state.chat_log.append({"utente": user_input, "llm": risposta})
-            # Clear input after processing
-            st.session_state.chat_input = ""
+    # Gestione del test in corso
+    if "test_in_corso" in st.session_state and st.session_state.test_in_corso:
+        if st.session_state.test_fase == "domanda":
+            st.info(f"📝 **Test in corso su: {st.session_state.test_argomento}**")
+            st.markdown(f"**Domanda**: {st.session_state.test_domanda}")
+            
+            # Callback per la risposta al test
+            def submit_test_risposta():
+                user_input = st.session_state.test_risposta
+                if user_input:
+                    st.session_state.test_risposta_utente = user_input
+                    st.session_state.test_fase = "valutazione"
+                    
+                    # Richiedi valutazione all'LLM
+                    prompt = f"""Sei un esaminatore di lingua inglese. Valuta la seguente risposta a una domanda di esame orale sul tema "{st.session_state.test_argomento}".
+
+Domanda: {st.session_state.test_domanda}
+
+Risposta dello studente: {user_input}
+
+Valuta la risposta su una scala da 1 a 10 considerando:
+- Accuratezza del contenuto (40%)
+- Correttezza linguistica (30%)
+- Chiarezza espositiva (30%)
+
+Fornisci un punteggio numerico da 1 a 10 e un breve commento costruttivo che evidenzi punti di forza e aree di miglioramento.
+Formatta la risposta così:
+PUNTEGGIO: [numero da 1 a 10]
+COMMENTO: [tuo commento]"""
+
+                    risposta = chiamata_llm(prompt)
+                    st.session_state.test_valutazione = risposta
+                    
+                    # Estrai punteggio e commento
+                    try:
+                        punteggio_match = risposta.split("PUNTEGGIO:")[1].split("\n")[0].strip()
+                        punteggio = int(punteggio_match)
+                        commento = risposta.split("COMMENTO:")[1].strip()
+                    except:
+                        punteggio = 5  # Default in caso di errore nel parsing
+                        commento = risposta
+                    
+                    # Salva il punteggio
+                    salva_punteggio(st.session_state.test_argomento, punteggio, commento)
+                    
+                    # Aggiorna chat log
+                    st.session_state.chat_log.append({"utente": f"Risposta al test: {user_input}", "llm": risposta})
+                    
+                    # Reset test state
+                    st.session_state.test_in_corso = False
+                    st.session_state.test_fase = None
+                    
+                    # Forza refresh
+                    st.rerun()
+            
+            # Text area per la risposta al test
+            st.text_area(
+                "Scrivi la tua risposta al test...", 
+                key="test_risposta",
+                height=150
+            )
+            
+            # Pulsante per inviare la risposta
+            st.button("Invia risposta", on_click=submit_test_risposta)
+            
+        elif st.session_state.test_fase == "valutazione":
+            st.info(f"📊 **Valutazione del test su: {st.session_state.test_argomento}**")
+            st.markdown(f"**Domanda**: {st.session_state.test_domanda}")
+            st.markdown(f"**La tua risposta**: {st.session_state.test_risposta_utente}")
+            st.markdown(f"**Valutazione**: {st.session_state.test_valutazione}")
+            
+            # Pulsante per terminare il test
+            if st.button("Chiudi valutazione"):
+                st.session_state.test_in_corso = False
+                st.session_state.test_fase = None
+                st.rerun()
+    else:
+        # Use a callback to handle chat submission
+        def submit_chat():
+            user_input = st.session_state.chat_input
+            if user_input:
+                risposta = chiamata_llm(user_input)
+                st.session_state.chat_log.append({"utente": user_input, "llm": risposta})
+                # Clear input after processing
+                st.session_state.chat_input = ""
+        
+        # Chat input with on_submit handler
+        st.text_input(
+            "Scrivi il tuo messaggio...", 
+            key="chat_input",
+            on_change=submit_chat
+        )
+
+def mostra_storico_punteggi():
+    st.markdown("### 📊 Storico Punteggi Test")
     
-    # Chat input with on_submit handler
-    st.text_input(
-        "Scrivi il tuo messaggio...", 
-        key="chat_input",
-        on_change=submit_chat
-    )
+    if punteggi_df.empty:
+        st.info("Non hai ancora completato nessun test. Inizia a testare la tua conoscenza!")
+    else:
+        # Ordina per data più recente
+        df_sorted = punteggi_df.sort_values(by="Data", ascending=False)
+        
+        # Visualizza in una tabella interattiva
+        st.dataframe(
+            df_sorted[["Argomento", "Punteggio", "Data"]],
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Visualizza grafico dell'andamento
+        if len(df_sorted) > 1:
+            st.markdown("#### Andamento Punteggi")
+            df_plot = df_sorted.copy()
+            df_plot["Data"] = pd.to_datetime(df_plot["Data"])
+            df_plot = df_plot.sort_values(by="Data")
+            
+            # Crea grafico
+            fig = ff.create_line_chart(
+                df_plot["Data"].dt.strftime("%d/%m %H:%M"),
+                df_plot["Punteggio"],
+                colors=['#3366CC'],
+                line_shape='linear'
+            )
+            
+            # Personalizza layout
+            fig.update_layout(
+                xaxis_title="Data",
+                yaxis_title="Punteggio",
+                yaxis=dict(range=[0, 10]),
+                height=300,
+                margin=dict(l=20, r=20, t=30, b=20)
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Statistiche
+            media = df_sorted["Punteggio"].mean()
+            ultimo = df_sorted.iloc[0]["Punteggio"]
+            miglioramento = ultimo - df_sorted.iloc[-1]["Punteggio"] if len(df_sorted) > 1 else 0
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Punteggio medio", f"{media:.1f}/10")
+            col2.metric("Ultimo punteggio", f"{ultimo}/10")
+            col3.metric("Trend", f"{miglioramento:+.1f}", delta_color="normal")
 
 def main():
     st.title("🧠 Dashboard Studio Prova Orale – Classe AS2B")
@@ -343,7 +506,7 @@ def main():
     col_sinistra, col_destra = st.columns([2, 1])
     
     with col_sinistra:
-        tab1, tab2 = st.tabs(["📅 Oggi", "📚 Tutti gli argomenti"])
+        tab1, tab2, tab3 = st.tabs(["📅 Oggi", "📚 Tutti gli argomenti", "📊 Storico Test"])
         
         with tab1:
             mostra_tabella_oggi()
@@ -352,6 +515,9 @@ def main():
             
         with tab2:
             mostra_lista_completa_argomenti()
+            
+        with tab3:
+            mostra_storico_punteggi()
     
     with col_destra:
         mostra_chat()
