@@ -150,15 +150,38 @@ def mostra_lista_completa_argomenti(argomenti_df, stato_argomenti_df):
                     # - Critici: se non è stato fatto nessuno dei due
                     etichetta = {"non iniziato": "⚪ Critico", "da ripassare": "🟠 Da ripassare", "completato": "🟢 Completato"}.get(stato_corrente, "⚪ Critico")
                     
-                    col1, col2, col3 = st.columns([5, 1, 1])
+                    # Check if this topic had an error previously
+                    had_error = "last_error_topic" in st.session_state and st.session_state.last_error_topic == full_arg
+                    
+                    # Adjust columns based on whether we need to show a refresh button
+                    if had_error:
+                        col1, col2, col3, col4 = st.columns([4, 1, 1, 1])
+                    else:
+                        col1, col2, col3 = st.columns([5, 1, 1])
+                        
                     with col1:
-                        st.markdown(f"{arg} - **{etichetta}**")
+                        if had_error:
+                            st.markdown(f"{arg} - **{etichetta}** ⚠️")
+                        else:
+                            st.markdown(f"{arg} - **{etichetta}**")
                     with col2:
                         if st.button("📖", key=f"studia_{full_arg}"):
                             return {"action": "studio", "topic": full_arg}
                     with col3:
                         if st.button("📝", key=f"test_{full_arg}"):
                             return {"action": "test", "topic": full_arg}
+                    
+                    # Add refresh button if this topic had an error
+                    if had_error:
+                        with col4:
+                            if st.button("🔄", key=f"refresh_{full_arg}", help="Refresh content"):
+                                # Import the function to clear the cache for this topic
+                                from src.llm.api import clear_topic_cache
+                                clear_topic_cache(full_arg)
+                                # Clear the error flag
+                                st.session_state.last_error_topic = None
+                                # Return action to regenerate content
+                                return {"action": "studio", "topic": full_arg}
     
     return None
 
@@ -190,15 +213,38 @@ def mostra_tabella_oggi(calendario_studio, oggi, stato_argomenti_df):
             # - Critici: se non è stato fatto nessuno dei due
             etichetta = {"non iniziato": "⚪ Critico", "da ripassare": "🟠 Da ripassare", "completato": "🟢 Completato"}.get(stato_corrente, "⚪ Critico")
             
-            col1, col2, col3 = st.columns([5, 1, 1])
+            # Check if this topic had an error previously
+            had_error = "last_error_topic" in st.session_state and st.session_state.last_error_topic == arg
+            
+            # Adjust columns based on whether we need to show a refresh button
+            if had_error:
+                col1, col2, col3, col4 = st.columns([4, 1, 1, 1])
+            else:
+                col1, col2, col3 = st.columns([5, 1, 1])
+                
             with col1:
-                st.markdown(f"{arg} - **{etichetta}**")
+                if had_error:
+                    st.markdown(f"{arg} - **{etichetta}** ⚠️")
+                else:
+                    st.markdown(f"{arg} - **{etichetta}**")
             with col2:
                 if st.button("📖", key=f"studia_oggi_{arg}"):
                     return {"action": "studio", "topic": arg}
             with col3:
                 if st.button("📝", key=f"test_oggi_{arg}"):
                     return {"action": "test", "topic": arg}
+                    
+            # Add refresh button if this topic had an error
+            if had_error:
+                with col4:
+                    if st.button("🔄", key=f"refresh_oggi_{arg}", help="Refresh content"):
+                        # Import the function to clear the cache for this topic
+                        from src.llm.api import clear_topic_cache
+                        clear_topic_cache(arg)
+                        # Clear the error flag
+                        st.session_state.last_error_topic = None
+                        # Return action to regenerate content
+                        return {"action": "studio", "topic": arg}
     
     return None
 
@@ -250,8 +296,11 @@ def mostra_chat(chat_log, stato_argomenti_df, stato_file, punteggi_df, punteggi_
     if "test_argomento" not in st.session_state:
         st.session_state.test_argomento = ""
     
-    # Chat history container with fixed height
-    with st.container(height=400):
+    # Add a slider to control the chat container height
+    chat_height = st.slider("Altezza chat", min_value=200, max_value=800, value=400, step=50, key="chat_height")
+    
+    # Chat history container with user-adjustable height
+    with st.container(height=chat_height):
         for turno in chat_log:
             # Verifica se è una risposta a un test
             if turno['utente'].startswith("Risposta al test:"):

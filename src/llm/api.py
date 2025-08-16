@@ -153,13 +153,15 @@ def run_parallel_llm_calls(prompts):
     return results
 
 
-@st.cache_data(show_spinner=True)
-def cached_llm_studio(argomento):
+# Modified to use TTL for cache and handle errors better
+@st.cache_data(show_spinner=True, ttl=600)  # Cache expires after 10 minutes
+def cached_llm_studio(argomento, retry=0):
     """
     Cached version of LLM call for topic study.
     
     Args:
         argomento (str): Topic name
+        retry (int): Retry attempt counter
         
     Returns:
         str: LLM response
@@ -179,10 +181,34 @@ Use a clear and professional tone. RESPOND ONLY IN ENGLISH."""
         
         # Check if response is empty or contains an error message
         if not response or response.startswith("❌") or "Errore" in response:
-            return f"Error generating content for {argomento}. Please try again or contact support."
+            # Don't cache error responses
+            st.cache_data.clear()
+            # If this is the first retry attempt, try once more
+            if retry < 1:
+                st.warning(f"Error generating content for {argomento}. Retrying...")
+                time.sleep(1)  # Wait a second before retrying
+                return cached_llm_studio(argomento, retry=retry+1)
+            else:
+                return f"Error generating content for {argomento}. Please try again or contact support."
         
         return response
 
+
+def clear_topic_cache(argomento):
+    """
+    Clear the cache for a specific topic.
+    
+    Args:
+        argomento (str): Topic name to clear from cache
+    """
+    # Create a unique key for this topic's cache entry
+    cache_key = f"cached_llm_studio-{argomento}"
+    
+    # Clear this specific cache entry if it exists
+    if hasattr(st.cache_data, "clear") and callable(st.cache_data.clear):
+        st.cache_data.clear(cache_key)
+        return True
+    return False
 
 def interazione_llm_su_argomento(argomento, modalita, stato_argomenti_df, stato_file, punteggi_df, punteggi_file, chat_log):
     """
@@ -210,8 +236,22 @@ def interazione_llm_su_argomento(argomento, modalita, stato_argomenti_df, stato_
         # Add a message to indicate that content is being generated
         st.info(f"Generating study content for '{argomento}'...")
         
+        # Check if we need to force refresh (if there was a previous error)
+        force_refresh = False
+        if "last_error_topic" in st.session_state and st.session_state.last_error_topic == argomento:
+            force_refresh = True
+            # Clear the error flag
+            st.session_state.last_error_topic = None
+            # Clear the cache for this topic
+            clear_topic_cache(argomento)
+            st.info("Refreshing content for this topic...")
+        
         # Get the response from the cached function
         risposta = cached_llm_studio(argomento)
+        
+        # If we get an error, mark this topic for refresh next time
+        if "Error generating content" in risposta:
+            st.session_state.last_error_topic = argomento
         
         # Add to chat log
         chat_log.append({"utente": f"Richiesta su '{argomento}' [{modalita}]", "llm": risposta})
