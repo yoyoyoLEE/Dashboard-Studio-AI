@@ -153,7 +153,7 @@ def run_parallel_llm_calls(prompts):
     return results
 
 
-@st.cache_data
+@st.cache_data(show_spinner=True)
 def cached_llm_studio(argomento):
     """
     Cached version of LLM call for topic study.
@@ -164,7 +164,8 @@ def cached_llm_studio(argomento):
     Returns:
         str: LLM response
     """
-    prompt = f"""You are an English language tutor. Explain the following topic as if it were a lesson:
+    with st.spinner(f"Generating study content for {argomento}..."):
+        prompt = f"""You are an English language tutor. Explain the following topic as if it were a lesson:
 
 Topic: {argomento}
 
@@ -174,7 +175,13 @@ Structure your explanation in 3 parts:
 3. Brief questions to verify student understanding
 
 Use a clear and professional tone. RESPOND ONLY IN ENGLISH."""
-    return chiamata_llm(prompt, max_tokens=800, temperature=0.7)
+        response = chiamata_llm(prompt, max_tokens=800, temperature=0.7)
+        
+        # Check if response is empty or contains an error message
+        if not response or response.startswith("❌") or "Errore" in response:
+            return f"Error generating content for {argomento}. Please try again or contact support."
+        
+        return response
 
 
 def interazione_llm_su_argomento(argomento, modalita, stato_argomenti_df, stato_file, punteggi_df, punteggi_file, chat_log):
@@ -199,7 +206,14 @@ def interazione_llm_su_argomento(argomento, modalita, stato_argomenti_df, stato_
     if modalita == "studio":
         # Usa la versione cached per lo studio
         stato_argomenti_df = aggiorna_stato_argomento(stato_argomenti_df, argomento, "da ripassare", stato_file)
+        
+        # Add a message to indicate that content is being generated
+        st.info(f"Generating study content for '{argomento}'...")
+        
+        # Get the response from the cached function
         risposta = cached_llm_studio(argomento)
+        
+        # Add to chat log
         chat_log.append({"utente": f"Richiesta su '{argomento}' [{modalita}]", "llm": risposta})
     elif modalita == "test":
         # Imposta lo stato della sessione per il test
